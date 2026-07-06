@@ -1,0 +1,501 @@
+<!DOCTYPE html>
+<html lang="cs">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>Postav planetu a zachraň kamaráda</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 100%; height: 100%; overflow: hidden; background: #060420; }
+  #game { display: block; width: 100%; height: 100%; touch-action: manipulation; cursor: crosshair; }
+  #hud {
+    position: fixed; top: 12px; left: 50%; transform: translateX(-50%);
+    display: flex; align-items: center; gap: 14px;
+    background: rgba(20, 16, 60, 0.75); border: 2px solid #6c5ce7;
+    border-radius: 999px; padding: 8px 22px;
+    font-family: "Comic Sans MS", "Chalkboard SE", cursive, sans-serif;
+    color: #fff; font-size: 20px; user-select: none; pointer-events: none;
+    white-space: nowrap;
+  }
+  #hud .dust { color: #ffe066; font-weight: bold; }
+  #bar {
+    width: 140px; height: 14px; border-radius: 999px;
+    background: rgba(255,255,255,0.15); overflow: hidden;
+  }
+  #barFill { height: 100%; width: 0%; background: linear-gradient(90deg,#ffe066,#ff9f43); transition: width .2s; }
+  #msg {
+    position: fixed; bottom: 8%; left: 50%; transform: translateX(-50%);
+    font-family: "Comic Sans MS", "Chalkboard SE", cursive, sans-serif;
+    font-size: clamp(20px, 4vw, 36px); color: #ffe066; text-align: center;
+    text-shadow: 0 2px 12px #000; pointer-events: none; user-select: none;
+    opacity: 0; transition: opacity .4s; padding: 0 16px; max-width: 90%;
+  }
+  #msg.show { opacity: 1; }
+  #title {
+    position: fixed; inset: 0; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; gap: 24px;
+    background: rgba(6, 4, 32, 0.85); z-index: 10; text-align: center;
+    font-family: "Comic Sans MS", "Chalkboard SE", cursive, sans-serif; padding: 20px;
+  }
+  #title h1 {
+    color: #ffe066; font-size: clamp(28px, 6vw, 56px);
+    text-shadow: 0 0 24px #ff9f43;
+  }
+  #title p { color: #dcd6ff; font-size: clamp(16px, 3vw, 24px); max-width: 560px; line-height: 1.5; }
+  #startBtn {
+    font-family: inherit; font-size: clamp(20px, 4vw, 32px);
+    padding: 14px 44px; border-radius: 999px; border: none; cursor: pointer;
+    background: linear-gradient(180deg, #ffe066, #ff9f43); color: #4a2c00;
+    font-weight: bold; box-shadow: 0 6px 24px rgba(255, 224, 102, 0.45);
+    transition: transform .15s;
+  }
+  #startBtn:hover { transform: scale(1.08); }
+</style>
+</head>
+<body>
+<canvas id="game"></canvas>
+
+<div id="hud">
+  <span>⭐ <span class="dust" id="dustCount">0</span></span>
+  <div id="bar"><div id="barFill"></div></div>
+  <span id="phaseName">Jádro planety</span>
+</div>
+
+<div id="msg"></div>
+
+<div id="title">
+  <h1>🪐 Postav planetu a zachraň kamaráda 🚀</h1>
+  <p>Tvůj kamarád uvízl ve vesmíru v rozbité raketě a nemá kde přistát!<br>
+  Klikej na letící hvězdičky a komety, sbírej hvězdný prach<br>
+  a postav mu novou planetu. 💛</p>
+  <button id="startBtn">HRÁT!</button>
+</div>
+
+<script>
+(() => {
+  const canvas = document.getElementById('game');
+  const ctx = canvas.getContext('2d');
+  const dustEl = document.getElementById('dustCount');
+  const barFill = document.getElementById('barFill');
+  const phaseNameEl = document.getElementById('phaseName');
+  const msgEl = document.getElementById('msg');
+
+  let W, H, CX, CY;
+  function resize() {
+    W = canvas.width = window.innerWidth;
+    H = canvas.height = window.innerHeight;
+    CX = W / 2;
+    CY = H * 0.58;
+  }
+  window.addEventListener('resize', resize);
+  resize();
+
+  // ------- fáze stavby planety -------
+  const PHASES = [
+    { name: 'Jádro planety',  cost: 5,  msg: 'Hurá! Žhavé jádro je hotové! 🔥' },
+    { name: 'Kamenný povrch', cost: 8,  msg: 'Planeta má pevný povrch! 🪨' },
+    { name: 'Voda a moře',    cost: 10, msg: 'Šplouchy šplouch! Moře je tu! 🌊' },
+    { name: 'Ostrovy',        cost: 12, msg: 'Vyrostly zelené ostrovy! 🏝️' },
+    { name: 'Stromy a květiny', cost: 14, msg: 'Všechno krásně kvete! 🌳🌸' },
+    { name: 'Vzduch na dýchání', cost: 16, msg: 'Planeta má vzduch! Dá se dýchat! 💨' },
+    { name: 'Zvířátka',       cost: 18, msg: 'Přiletěla zvířátka! Planeta je HOTOVÁ! 🐰' },
+  ];
+
+  let phase = 0;          // kolik vrstev už stojí
+  let dust = 0;           // nasbíraný prach v aktuální fázi
+  let state = 'title';    // title | play | landing | won
+  let time = 0;
+  let landingT = 0;
+
+  const R = () => Math.min(W, H) * 0.17; // poloměr planety
+
+  // ------- hvězdy na pozadí -------
+  const bgStars = [];
+  for (let i = 0; i < 120; i++) {
+    bgStars.push({ x: Math.random(), y: Math.random(), r: Math.random() * 1.6 + 0.4, tw: Math.random() * Math.PI * 2 });
+  }
+
+  // ------- letící sběratelné objekty -------
+  const flyers = [];
+  function spawnFlyer() {
+    const fromLeft = Math.random() < 0.5;
+    const isComet = Math.random() < 0.25;
+    const y = H * (0.08 + Math.random() * 0.75);
+    flyers.push({
+      x: fromLeft ? -60 : W + 60,
+      y,
+      vx: (fromLeft ? 1 : -1) * (isComet ? 3.2 + Math.random() * 2 : 1.2 + Math.random() * 1.4) * (W / 900),
+      vy: (Math.random() - 0.5) * 0.6,
+      r: isComet ? 26 : 20,
+      comet: isComet,
+      value: isComet ? 3 : 1,
+      wob: Math.random() * Math.PI * 2,
+    });
+  }
+
+  // ------- částicové efekty -------
+  const parts = [];
+  function burst(x, y, color, n = 14) {
+    for (let i = 0; i < n; i++) {
+      const a = Math.random() * Math.PI * 2;
+      const s = 1 + Math.random() * 4;
+      parts.push({ x, y, vx: Math.cos(a) * s, vy: Math.sin(a) * s, life: 1, color });
+    }
+  }
+
+  // ------- plovoucí texty (+1) -------
+  const floats = [];
+  function floatText(x, y, txt) {
+    floats.push({ x, y, txt, life: 1 });
+  }
+
+  // ------- zvířátka na hotové planetě -------
+  const animals = ['🐰', '🦊', '🐢', '🐦', '🐱'];
+
+  function showMsg(t, ms = 2600) {
+    msgEl.textContent = t;
+    msgEl.classList.add('show');
+    clearTimeout(showMsg._t);
+    showMsg._t = setTimeout(() => msgEl.classList.remove('show'), ms);
+  }
+
+  function updateHud() {
+    if (phase < PHASES.length) {
+      dustEl.textContent = dust + ' / ' + PHASES[phase].cost;
+      barFill.style.width = Math.min(100, dust / PHASES[phase].cost * 100) + '%';
+      phaseNameEl.textContent = 'Stavíme: ' + PHASES[phase].name;
+    } else {
+      dustEl.textContent = '✔';
+      barFill.style.width = '100%';
+      phaseNameEl.textContent = 'Planeta hotová!';
+    }
+  }
+
+  // ------- klikání -------
+  function pointer(e) {
+    const t = e.touches ? e.touches[0] : e;
+    return { x: t.clientX, y: t.clientY };
+  }
+  function onTap(e) {
+    if (state !== 'play') return;
+    const p = pointer(e);
+    for (let i = flyers.length - 1; i >= 0; i--) {
+      const f = flyers[i];
+      const dx = p.x - f.x, dy = p.y - f.y;
+      if (dx * dx + dy * dy < (f.r + 22) * (f.r + 22)) {
+        flyers.splice(i, 1);
+        dust += f.value;
+        burst(f.x, f.y, f.comet ? '#7ed6ff' : '#ffe066');
+        floatText(f.x, f.y, '+' + f.value + ' ⭐');
+        checkPhase();
+        updateHud();
+        return;
+      }
+    }
+  }
+  canvas.addEventListener('mousedown', onTap);
+  canvas.addEventListener('touchstart', (e) => { e.preventDefault(); onTap(e); }, { passive: false });
+
+  function checkPhase() {
+    if (phase >= PHASES.length) return;
+    if (dust >= PHASES[phase].cost) {
+      dust -= PHASES[phase].cost;
+      showMsg(PHASES[phase].msg);
+      burst(CX, CY, '#ff9f43', 40);
+      phase++;
+      if (phase >= PHASES.length) {
+        setTimeout(() => {
+          state = 'landing';
+          landingT = 0;
+          showMsg('Kamarád přistává! 🚀', 3000);
+        }, 1800);
+      }
+    }
+  }
+
+  // ================= KRESLENÍ =================
+
+  function drawBg() {
+    const g = ctx.createLinearGradient(0, 0, 0, H);
+    g.addColorStop(0, '#0b0730');
+    g.addColorStop(1, '#1b1250');
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, W, H);
+    for (const s of bgStars) {
+      const a = 0.4 + 0.6 * Math.abs(Math.sin(time * 0.02 + s.tw));
+      ctx.globalAlpha = a;
+      ctx.fillStyle = '#fff';
+      ctx.beginPath();
+      ctx.arc(s.x * W, s.y * H, s.r, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  function drawPlanet() {
+    const r = R();
+    ctx.save();
+    ctx.translate(CX, CY);
+
+    if (phase >= 6) { // atmosféra
+      const ag = ctx.createRadialGradient(0, 0, r, 0, 0, r * 1.45);
+      ag.addColorStop(0, 'rgba(126, 214, 255, 0.35)');
+      ag.addColorStop(1, 'rgba(126, 214, 255, 0)');
+      ctx.fillStyle = ag;
+      ctx.beginPath(); ctx.arc(0, 0, r * 1.45, 0, Math.PI * 2); ctx.fill();
+    }
+
+    if (phase >= 1) { // jádro
+      const pulse = 1 + Math.sin(time * 0.06) * 0.04;
+      const cr = (phase >= 2 ? r : r * 0.55) * pulse;
+      const cg = ctx.createRadialGradient(0, 0, 0, 0, 0, cr);
+      cg.addColorStop(0, '#fff3b0');
+      cg.addColorStop(0.5, '#ff9f43');
+      cg.addColorStop(1, '#e2574c');
+      ctx.fillStyle = cg;
+      ctx.beginPath(); ctx.arc(0, 0, cr, 0, Math.PI * 2); ctx.fill();
+    }
+
+    if (phase >= 2) { // kamenný povrch
+      const rg = ctx.createRadialGradient(-r * 0.3, -r * 0.3, r * 0.1, 0, 0, r);
+      rg.addColorStop(0, '#b1a296');
+      rg.addColorStop(1, '#6e5f55');
+      ctx.fillStyle = rg;
+      ctx.beginPath(); ctx.arc(0, 0, r, 0, Math.PI * 2); ctx.fill();
+      // krátery
+      ctx.fillStyle = 'rgba(0,0,0,0.15)';
+      const craters = [[-0.4, -0.2, 0.13], [0.3, 0.35, 0.1], [0.45, -0.4, 0.08], [-0.1, 0.5, 0.09]];
+      for (const [cx2, cy2, cr2] of craters) {
+        ctx.beginPath(); ctx.arc(cx2 * r, cy2 * r, cr2 * r, 0, Math.PI * 2); ctx.fill();
+      }
+    }
+
+    if (phase >= 3) { // voda
+      const wg = ctx.createRadialGradient(-r * 0.3, -r * 0.3, r * 0.1, 0, 0, r);
+      wg.addColorStop(0, '#74c0fc');
+      wg.addColorStop(1, '#1971c2');
+      ctx.fillStyle = wg;
+      ctx.beginPath(); ctx.arc(0, 0, r, 0, Math.PI * 2); ctx.fill();
+      // vlnky
+      ctx.strokeStyle = 'rgba(255,255,255,0.25)';
+      ctx.lineWidth = 2;
+      for (let i = 0; i < 3; i++) {
+        const wy = (-0.4 + i * 0.35) * r;
+        ctx.beginPath();
+        for (let x = -r * 0.8; x <= r * 0.8; x += 6) {
+          const y = wy + Math.sin(x * 0.05 + time * 0.05 + i) * 4;
+          if (Math.hypot(x, y) < r * 0.92) { x === -r * 0.8 ? ctx.moveTo(x, y) : ctx.lineTo(x, y); }
+        }
+        ctx.stroke();
+      }
+    }
+
+    if (phase >= 4) { // ostrovy
+      ctx.fillStyle = '#69db7c';
+      const isl = [[-0.35, -0.25, 0.28, 0.18], [0.3, 0.15, 0.24, 0.16], [-0.05, 0.45, 0.18, 0.12], [0.35, -0.42, 0.15, 0.11]];
+      for (const [ix, iy, iw, ih] of isl) {
+        ctx.beginPath();
+        ctx.ellipse(ix * r, iy * r, iw * r, ih * r, 0.3, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+
+    if (phase >= 5) { // stromy a květiny
+      ctx.font = `${Math.max(14, r * 0.18)}px serif`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      const deco = [['🌳', -0.38, -0.28], ['🌴', 0.3, 0.1], ['🌸', -0.02, 0.44], ['🌲', 0.38, -0.44], ['🌷', -0.28, -0.1], ['🌻', 0.18, 0.28]];
+      for (const [em, dx, dy] of deco) ctx.fillText(em, dx * r, dy * r);
+    }
+
+    if (phase >= 7) { // zvířátka
+      ctx.font = `${Math.max(14, r * 0.16)}px serif`;
+      animals.forEach((a, i) => {
+        const ang = time * 0.008 + i * (Math.PI * 2 / animals.length);
+        const hop = Math.abs(Math.sin(time * 0.08 + i)) * r * 0.04;
+        ctx.fillText(a, Math.cos(ang) * r * 0.62, Math.sin(ang) * r * 0.62 - hop);
+      });
+    }
+
+    // stín na okraji hotové koule
+    if (phase >= 2) {
+      const sh = ctx.createRadialGradient(-r * 0.4, -r * 0.4, r * 0.4, 0, 0, r * 1.02);
+      sh.addColorStop(0, 'rgba(0,0,0,0)');
+      sh.addColorStop(1, 'rgba(0,0,20,0.35)');
+      ctx.fillStyle = sh;
+      ctx.beginPath(); ctx.arc(0, 0, r, 0, Math.PI * 2); ctx.fill();
+    }
+
+    ctx.restore();
+
+    // stavební "duchová" silueta, dokud planeta nestojí
+    if (phase === 0) {
+      ctx.save();
+      ctx.translate(CX, CY);
+      ctx.setLineDash([10, 10]);
+      ctx.strokeStyle = 'rgba(255,255,255,0.25)';
+      ctx.lineWidth = 3;
+      ctx.beginPath(); ctx.arc(0, 0, R(), 0, Math.PI * 2); ctx.stroke();
+      ctx.restore();
+    }
+  }
+
+  function drawFriend() {
+    // pozice: obíhá nahoře, při přistávání sletí na planetu
+    let fx, fy, wob = Math.sin(time * 0.03) * 10;
+    if (state === 'landing' || state === 'won') {
+      const t = Math.min(1, landingT / 180);
+      const ease = t * t * (3 - 2 * t);
+      const startX = CX + Math.cos(time * 0.004) * 10, startY = H * 0.16;
+      const endX = CX, endY = CY - R() - 24;
+      fx = startX + (endX - startX) * ease;
+      fy = startY + (endY - startY) * ease;
+      wob *= (1 - ease);
+    } else {
+      fx = CX + Math.cos(time * 0.008) * W * 0.28;
+      fy = H * 0.16 + wob;
+    }
+
+    ctx.save();
+    ctx.translate(fx, fy);
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+
+    // raketa
+    ctx.font = '44px serif';
+    const broken = state === 'play' || state === 'title';
+    ctx.save();
+    ctx.rotate(broken ? Math.sin(time * 0.05) * 0.15 : Math.PI * 0.0);
+    ctx.fillText('🚀', 0, 0);
+    ctx.restore();
+    // kamarád
+    ctx.font = '30px serif';
+    ctx.fillText(state === 'won' ? '😄' : '🥺', 26, -18);
+    // kouř z rozbité rakety
+    if (broken && Math.floor(time) % 30 === 0) {
+      parts.push({ x: fx - 18, y: fy + 14, vx: -0.5, vy: -0.8, life: 1, color: '#aaa' });
+    }
+
+    // bublina s prosbou
+    if (state === 'play' && phase < PHASES.length) {
+      const texts = ['Pomoc! 🆘', 'Postav mi planetu!', 'Už to bude?', 'Věřím ti! 💪', 'Jsi kamarád!'];
+      const txt = texts[Math.floor(time / 300) % texts.length];
+      ctx.font = '16px "Comic Sans MS", cursive, sans-serif';
+      const tw = ctx.measureText(txt).width;
+      ctx.fillStyle = 'rgba(255,255,255,0.92)';
+      ctx.beginPath();
+      ctx.roundRect(-tw / 2 - 12, -66, tw + 24, 30, 14);
+      ctx.fill();
+      ctx.fillStyle = '#333';
+      ctx.fillText(txt, 0, -51);
+    }
+    ctx.restore();
+
+    if (state === 'landing') {
+      landingT++;
+      if (landingT >= 200) {
+        state = 'won';
+        showMsg('🎉 ZACHRÁNIL JSI KAMARÁDA! 🎉', 999999);
+        for (let i = 0; i < 5; i++) {
+          setTimeout(() => burst(Math.random() * W, Math.random() * H * 0.6, ['#ffe066', '#ff6b6b', '#69db7c', '#74c0fc'][i % 4], 30), i * 300);
+        }
+      }
+    }
+    if (state === 'won' && Math.floor(time) % 40 === 0) {
+      burst(Math.random() * W, Math.random() * H * 0.5, ['#ffe066', '#ff6b6b', '#69db7c', '#74c0fc'][Math.floor(Math.random() * 4)], 12);
+    }
+  }
+
+  function drawFlyers() {
+    for (const f of flyers) {
+      ctx.save();
+      ctx.translate(f.x, f.y + Math.sin(time * 0.05 + f.wob) * 6);
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      if (f.comet) {
+        // ohon komety
+        const dir = f.vx > 0 ? -1 : 1;
+        const tg = ctx.createLinearGradient(0, 0, dir * 70, 0);
+        tg.addColorStop(0, 'rgba(126,214,255,0.7)');
+        tg.addColorStop(1, 'rgba(126,214,255,0)');
+        ctx.fillStyle = tg;
+        ctx.beginPath();
+        ctx.moveTo(0, -8); ctx.lineTo(dir * 70, 0); ctx.lineTo(0, 8);
+        ctx.closePath(); ctx.fill();
+        ctx.font = '34px serif';
+        ctx.fillText('☄️', 0, 0);
+      } else {
+        ctx.font = '30px serif';
+        ctx.fillText('⭐', 0, 0);
+      }
+      ctx.restore();
+    }
+  }
+
+  function drawParticles() {
+    for (let i = parts.length - 1; i >= 0; i--) {
+      const p = parts[i];
+      p.x += p.vx; p.y += p.vy; p.vy += 0.03; p.life -= 0.02;
+      if (p.life <= 0) { parts.splice(i, 1); continue; }
+      ctx.globalAlpha = p.life;
+      ctx.fillStyle = p.color;
+      ctx.beginPath(); ctx.arc(p.x, p.y, 3.5 * p.life + 1, 0, Math.PI * 2); ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+
+    ctx.textAlign = 'center';
+    ctx.font = 'bold 20px "Comic Sans MS", cursive, sans-serif';
+    for (let i = floats.length - 1; i >= 0; i--) {
+      const f = floats[i];
+      f.y -= 1.2; f.life -= 0.02;
+      if (f.life <= 0) { floats.splice(i, 1); continue; }
+      ctx.globalAlpha = f.life;
+      ctx.fillStyle = '#ffe066';
+      ctx.fillText(f.txt, f.x, f.y);
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  // ------- hlavní smyčka -------
+  let spawnTimer = 0;
+  function loop() {
+    time++;
+    drawBg();
+
+    if (state === 'play') {
+      spawnTimer--;
+      if (spawnTimer <= 0 && flyers.length < 6) {
+        spawnFlyer();
+        spawnTimer = 40 + Math.random() * 50;
+      }
+      for (let i = flyers.length - 1; i >= 0; i--) {
+        const f = flyers[i];
+        f.x += f.vx; f.y += f.vy;
+        if (f.x < -100 || f.x > W + 100) flyers.splice(i, 1);
+      }
+    }
+
+    drawPlanet();
+    drawFlyers();
+    drawFriend();
+    drawParticles();
+
+    requestAnimationFrame(loop);
+  }
+
+  document.getElementById('startBtn').addEventListener('click', () => {
+    document.getElementById('title').style.display = 'none';
+    state = 'play';
+    updateHud();
+    showMsg('Klikej na hvězdičky! ⭐ Kometa ☄️ dá prach za 3!', 4000);
+  });
+
+  // skrytý pomocník pro testování (napiš _postav() v konzoli)
+  window._postav = () => { dust += PHASES[Math.min(phase, PHASES.length - 1)].cost; checkPhase(); updateHud(); };
+
+  updateHud();
+  loop();
+})();
+</script>
+</body>
+</html>
