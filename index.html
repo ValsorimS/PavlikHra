@@ -41,6 +41,24 @@
   #mineBar { height: 10px; border-radius: 999px; background: rgba(255,255,255,0.15); margin-top: 6px; overflow: hidden; }
   #mineFill { height: 100%; width: 0%; background: linear-gradient(90deg,#69db7c,#38d9a9); }
 
+  /* ---------- eventy: Dřevěná / Kamenná horečka ---------- */
+  #eventBanners {
+    position: fixed; top: 100px; left: 50%; transform: translateX(-50%);
+    z-index: 6; display: flex; flex-direction: column; gap: 8px; align-items: center;
+  }
+  .eventBanner {
+    background: linear-gradient(180deg,#ffcf33,#ff9f43); color: #4a2c00;
+    border: 3px solid #fff3b0; border-radius: 16px; padding: 8px 20px;
+    font-size: 18px; font-weight: bold; display: none; text-align: center;
+    box-shadow: 0 6px 24px rgba(255,159,67,0.6); white-space: nowrap;
+    animation: eventPulse 0.7s ease-in-out infinite alternate;
+  }
+  .eventBanner.stone {
+    background: linear-gradient(180deg,#cfd4da,#8d99ae); border-color: #e9ecef;
+    box-shadow: 0 6px 24px rgba(141,153,174,0.6);
+  }
+  @keyframes eventPulse { from { transform: scale(1); } to { transform: scale(1.06); } }
+
   /* ---------- crafting panel ---------- */
   #craft {
     position: fixed; top: 10px; right: 10px; width: 235px; max-height: calc(100% - 20px);
@@ -122,6 +140,10 @@
 
 <div id="inv"></div>
 <div id="bubble"></div>
+<div id="eventBanners">
+  <div id="eventWood" class="eventBanner"></div>
+  <div id="eventStone" class="eventBanner stone"></div>
+</div>
 
 <div id="mine">
   <span id="mineTxt"></span>
@@ -732,8 +754,64 @@ setInterval(() => {
   if (bridgeSegs < BRIDGE_TOTAL) pleas.push('Kamarád: Postav most, prosím! 🌉');
   if (!suit) pleas.push('Kamarád: Nezapomeň na potápěčský oblek! 🤿');
   if (bridgeSegs >= BRIDGE_TOTAL && suit) pleas.push('Kamarád: Všechno máš! Zachraň mě! 🦸');
-  if (state === 'play' && !bubbleEl.classList.contains('show')) bubble(pleas[pleaIdx++ % pleas.length], 2800);
+  if (state === 'play' && !bubbleEl.classList.contains('show') && woodRush <= 0 && stoneRush <= 0) bubble(pleas[pleaIdx++ % pleas.length], 2800);
 }, 14000);
+
+// ================== EVENT: Dřevěná horečka 🪵💰 ==================
+// Občas se spustí sama: ze stromů padá 100× víc dřeva. Může běžet zároveň s kamennou horečkou.
+const EVENT_DURATION = 15;   // jak dlouho event trvá (sekundy)
+let woodRush = 0;            // zbývající čas eventu (0 = neaktivní)
+const eventWoodEl = document.getElementById('eventWood');
+
+function startWoodRush() {
+  if (state !== 'play' || woodRush > 0) return;
+  woodRush = EVENT_DURATION;
+  eventWoodEl.style.display = 'block';
+  bubble('🪵💰 DŘEVĚNÁ HOREČKA! 100× víc dřeva ze stromů!', 4000);
+}
+function updateWoodRush(dt) {
+  if (woodRush <= 0) return;
+  woodRush -= dt;
+  if (woodRush <= 0) {
+    woodRush = 0;
+    eventWoodEl.style.display = 'none';
+    bubble('Dřevěná horečka skončila. 🪵', 2500);
+  } else {
+    eventWoodEl.textContent = `🪵💰 DŘEVĚNÁ HOREČKA! ${Math.ceil(woodRush)} s`;
+  }
+}
+// event se pokusí spustit každých ~40 s hraní
+setInterval(startWoodRush, 40000);
+// první horečka přijde brzy po startu, ať ji hráč hned zažije
+setTimeout(startWoodRush, 12000);
+window._event = startWoodRush;   // pro testování v konzoli
+
+// ================== EVENT: Kamenná horečka 🪨💰 ==================
+// Občas se spustí sama: z kamenů padá 100× víc kamene. Může běžet zároveň s dřevěnou horečkou.
+let stoneRush = 0;           // zbývající čas eventu (0 = neaktivní)
+const eventStoneEl = document.getElementById('eventStone');
+
+function startStoneRush() {
+  if (state !== 'play' || stoneRush > 0) return;
+  stoneRush = EVENT_DURATION;
+  eventStoneEl.style.display = 'block';
+  bubble('🪨💰 KAMENNÁ HOREČKA! 100× víc kamene z kamenů!', 4000);
+}
+function updateStoneRush(dt) {
+  if (stoneRush <= 0) return;
+  stoneRush -= dt;
+  if (stoneRush <= 0) {
+    stoneRush = 0;
+    eventStoneEl.style.display = 'none';
+    bubble('Kamenná horečka skončila. 🪨', 2500);
+  } else {
+    eventStoneEl.textContent = `🪨💰 KAMENNÁ HOREČKA! ${Math.ceil(stoneRush)} s`;
+  }
+}
+// odlišný interval a start než dřevěná horečka, aby se občas potkaly a jindy ne
+setInterval(startStoneRush, 45000);
+setTimeout(startStoneRush, 22000);
+window._stoneEvent = startStoneRush;   // pro testování v konzoli
 
 // ================== OVLÁDÁNÍ ==================
 // klávesnice — pro hraní na počítači
@@ -834,8 +912,11 @@ function updateMining(dt, now) {
     best.group.visible = false;
     best.inner.rotation.z = 0;
     for (const [k, v] of Object.entries(def.yield)) {
-      inv[k] += v;
-      gainText(`+${v} ${Object.fromEntries(INV_DEF.map(([kk, e]) => [kk, e]))[k]}`);
+      let amount = v;
+      if (k === 'wood' && woodRush > 0) amount = v * 100;         // Dřevěná horečka
+      else if (k === 'stone' && stoneRush > 0) amount = v * 100;  // Kamenná horečka
+      inv[k] += amount;
+      gainText(`+${amount} ${Object.fromEntries(INV_DEF.map(([kk, e]) => [kk, e]))[k]}`);
     }
     renderInv();
     setTimeout(() => {
@@ -954,6 +1035,8 @@ function update(dt) {
   if (state === 'play') {
     updateMovement(dt, now);
     updateMining(dt, now);
+    updateWoodRush(dt);
+    updateStoneRush(dt);
   } else if (state === 'rescue') {
     updateRescue(dt);
   }
