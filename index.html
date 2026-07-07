@@ -247,25 +247,59 @@ const water = new THREE.Mesh(
 );
 planet.add(water);
 
-// ---- šestiúhelníkové dlaždice z rozděleného dvacetistěnu ----
-const dirs = [];
+// ---- šestiúhelníkové (a 12 pětiúhelníkových) dlaždice z rozdělené koule ----
+// Dlaždice jsou duálem geodesické koule (Goldbergův polyedr) — každá hrana
+// dlaždice je sdílená přesně se sousední dlaždicí, takže mezi nimi nikdy
+// nevznikne mezera (na rozdíl od dřívějších pevných šestiúhelníků).
+const DETAIL = 2;
+const dirs = [];      // směr každého vrcholu geodesické koule = střed jedné dlaždice
+const faces = [];     // trojúhelníky geodesické koule (trojice indexů do dirs[])
 {
-  const ico = new THREE.IcosahedronGeometry(1, 2);
+  const ico = new THREE.IcosahedronGeometry(1, DETAIL);
   const p = ico.getAttribute('position');
-  const seen = new Set();
+  const key = v => v.toArray().map(x => x.toFixed(3)).join(',');
+  const map = new Map();
+  const idxOfPos = new Array(p.count);
   for (let i = 0; i < p.count; i++) {
     const v = new THREE.Vector3().fromBufferAttribute(p, i).normalize();
-    const key = v.toArray().map(x => x.toFixed(3)).join(',');
-    if (!seen.has(key)) { seen.add(key); dirs.push(v); }
+    const k = key(v);
+    let idx = map.get(k);
+    if (idx === undefined) { idx = dirs.length; dirs.push(v); map.set(k, idx); }
+    idxOfPos[i] = idx;
   }
+  for (let i = 0; i < p.count; i += 3) faces.push([idxOfPos[i], idxOfPos[i + 1], idxOfPos[i + 2]]);
 }
-let minChord = Infinity;
-for (let i = 1; i < dirs.length; i++) {
-  const d = dirs[0].distanceTo(dirs[i]);
-  if (d < minChord) minChord = d;
+// střed každého trojúhelníku = jeden vrchol výsledné dlaždice
+const faceCenters = faces.map(f => new THREE.Vector3()
+  .add(dirs[f[0]]).add(dirs[f[1]]).add(dirs[f[2]]).normalize());
+
+// které trojúhelníky se dotýkají kterého vrcholu + sousednost vrcholů
+const vertFaces = dirs.map(() => []);
+const neighborIdx = dirs.map(() => new Set());
+faces.forEach((f, fi) => {
+  f.forEach(vi => vertFaces[vi].push(fi));
+  const [a, b, c] = f;
+  neighborIdx[a].add(b); neighborIdx[b].add(a);
+  neighborIdx[b].add(c); neighborIdx[c].add(b);
+  neighborIdx[c].add(a); neighborIdx[a].add(c);
+});
+// seřaď trojúhelníky kolem vrcholu do kruhu — to je obrys (obvod) dlaždice
+function tileRing(vi) {
+  const list = vertFaces[vi];
+  const others = fi => faces[fi].filter(x => x !== vi);
+  const used = new Set([list[0]]);
+  const ring = [list[0]];
+  let chase = others(list[0])[1];
+  while (ring.length < list.length) {
+    const next = list.find(fi => !used.has(fi) && others(fi).includes(chase));
+    if (next === undefined) break;
+    used.add(next);
+    ring.push(next);
+    const o = others(next);
+    chase = o[0] === chase ? o[1] : o[0];
+  }
+  return ring.map(fi => faceCenters[fi]);
 }
-const tileR = R * minChord * 0.58;   // poloměr šestiúhelníku
-const MINE_DIST = tileR * 1.35;      // dosah automatického těžení
 
 const Y = new THREE.Vector3(0, 1, 0);
 const BIOME = {
@@ -276,22 +310,51 @@ const BIOME = {
   dimond: { name: 'Diamantový důl 💎', color: 0x8fd3dd },
 };
 
+const OUTER_R = R + 0.45, INNER_R = R - 0.65;   // výška dlaždice (horní / spodní okraj)
+let sumTileRadius = 0;
+
 const tiles = dirs.map((dir, i) => {
-  const geo = new THREE.CylinderGeometry(tileR, tileR * 0.92, 1.1, 6);
-  const mat = new THREE.MeshStandardMaterial({ color: 0x58b368, roughness: 0.9 });
+  const ring = tileRing(i);              // 5 nebo 6 bodů po obvodu dlaždice
+  const n = ring.length;
+  const anchor = dir.clone().multiplyScalar(R - 0.1);
+  const top = ring.map(v => v.clone().multiplyScalar(OUTER_R).sub(anchor));
+  const bottom = ring.map(v => v.clone().multiplyScalar(INNER_R).sub(anchor));
+  const topCenter = dir.clone().multiplyScalar(OUTER_R).sub(anchor);
+  const bottomCenter = dir.clone().multiplyScalar(INNER_R).sub(anchor);
+
+  // ověř směr obvodu (po/proti směru hodinových ručiček zvenku) a případně otoč
+  const testNormal = new THREE.Vector3().subVectors(top[1], top[0])
+    .cross(new THREE.Vector3().subVectors(top[2], top[0]));
+  if (testNormal.dot(dir) < 0) { top.reverse(); bottom.reverse(); }
+
+  const pos = [];
+  const tri = (a, b, c) => pos.push(a.x, a.y, a.z, b.x, b.y, b.z, c.x, c.y, c.z);
+  for (let k = 0; k < n; k++) {
+    const k2 = (k + 1) % n;
+    tri(topCenter, top[k], top[k2]);             // horní víko
+    tri(bottomCenter, bottom[k2], bottom[k]);     // spodní víko (opačné pořadí)
+    tri(top[k], bottom[k], bottom[k2]);           // boční stěna
+    tri(top[k], bottom[k2], top[k2]);
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  geo.computeVertexNormals();
+  const mat = new THREE.MeshStandardMaterial({ color: 0x58b368, roughness: 0.9, flatShading: true });
   const mesh = new THREE.Mesh(geo, mat);
-  mesh.position.copy(dir).multiplyScalar(R - 0.1);
-  mesh.quaternion.setFromUnitVectors(Y, dir);
+  mesh.position.copy(anchor);
   mesh.visible = false;
   planet.add(mesh);
-  return { i, dir, mesh, unlocked: false, biome: null };
+
+  const radius = top.reduce((s, v) => s + v.length(), 0) / n;
+  sumTileRadius += radius;
+  return { i, dir, mesh, radius, unlocked: false, biome: null };
 });
+
+const MINE_DIST = (sumTileRadius / tiles.length) * 1.35;   // dosah automatického těžení
 
 // sousednost + pořadí odemykání (od spawnu ven)
 const spawnTile = tiles.reduce((a, b) => (a.dir.y > b.dir.y ? a : b));
-for (const t of tiles) {
-  t.neighbors = tiles.filter(o => o !== t && o.dir.distanceTo(t.dir) < minChord * 1.4);
-}
+for (const t of tiles) t.neighbors = [...neighborIdx[t.i]].map(j => tiles[j]);
 const unlockOrder = [];
 {
   const seen = new Set([spawnTile.i]);
@@ -379,7 +442,7 @@ function spawnObject(type, tile, offAngle, offDist) {
 }
 
 function populateTile(tile) {
-  const b = tile.biome, r = tileR;
+  const b = tile.biome, r = tile.radius;
   if (b === 'forest') {
     spawnObject('tree', tile, Math.random() * 6.28, r * 0.45);
     if (Math.random() < 0.5) spawnObject('tree', tile, Math.random() * 6.28, r * 0.55);
@@ -415,34 +478,71 @@ planet.quaternion.setFromUnitVectors(spawnTile.dir, Y);
 // počáteční ostrůvek (5 lesních dlaždic)
 for (let i = 0; i < 5; i++) unlockNextTile(true);
 // jistota: strom hned u spawnu, ať má hráč co těžit
-spawnObject('tree', spawnTile, 1.2, tileR * 0.5);
+spawnObject('tree', spawnTile, 1.2, spawnTile.radius * 0.5);
 
-// ================== PANÁČEK ==================
+// ================== PANÁČEK (roztomilý chibi styl) ==================
 const player = new THREE.Group();
 {
-  const skin = wood(0xffd9b3), shirt = wood(0x4dabf7), pants = wood(0x364fc7);
-  const legL = new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.5, 0.24), pants);
+  const skin = wood(0xffd9b3), shirt = wood(0x4dabf7), pants = wood(0x3454d1),
+        cheekMat = wood(0xff9eb0), hairMat = wood(0x6b4a2b),
+        eyeWhite = wood(0xffffff), pupilMat = wood(0x2b2450), mouthMat = wood(0xaa5c3e);
+
+  // buclaté zaoblené nožičky
+  const legGeo = new THREE.CapsuleGeometry(0.13, 0.2, 4, 8);
+  const legL = new THREE.Mesh(legGeo, pants);
   const legR = legL.clone();
-  legL.position.set(-0.15, 0.25, 0); legR.position.set(0.15, 0.25, 0);
-  const body = new THREE.Mesh(new THREE.BoxGeometry(0.6, 0.65, 0.34), shirt);
-  body.position.y = 0.82;
-  const armL = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.5, 0.2), shirt);
+  legL.position.set(-0.16, 0.23, 0); legR.position.set(0.16, 0.23, 0);
+
+  // oválné zaoblené tělo
+  const body = new THREE.Mesh(new THREE.SphereGeometry(0.34, 16, 12), shirt);
+  body.scale.set(1, 1.15, 0.92);
+  body.position.y = 0.76;
+
+  // buclaté zaoblené ručičky, mírně od těla
+  const armGeo = new THREE.CapsuleGeometry(0.1, 0.24, 4, 8);
+  const armL = new THREE.Mesh(armGeo, shirt);
   const armR = armL.clone();
-  armL.position.set(-0.42, 0.85, 0); armR.position.set(0.42, 0.85, 0);
-  const head = new THREE.Mesh(new THREE.BoxGeometry(0.52, 0.5, 0.48), skin);
-  head.position.y = 1.42;
-  const eye = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.1, 0.03), wood(0x222222));
-  const eyeL = eye.clone(), eyeR = eye.clone();
-  eyeL.position.set(-0.12, 1.46, 0.25); eyeR.position.set(0.12, 1.46, 0.25);
-  player.add(legL, legR, body, armL, armR, head, eyeL, eyeR);
+  armL.position.set(-0.4, 0.8, 0); armR.position.set(0.4, 0.8, 0);
+  armL.rotation.z = 0.3; armR.rotation.z = -0.3;
+
+  // velká kulatá hlava (chibi poměr — hlava skoro jako tělo)
+  const head = new THREE.Mesh(new THREE.SphereGeometry(0.46, 20, 16), skin);
+  head.position.y = 1.4;
+
+  // růžové tvářičky
+  const cheekGeo = new THREE.SphereGeometry(0.09, 10, 8);
+  const cheekL = new THREE.Mesh(cheekGeo, cheekMat);
+  const cheekR = cheekL.clone();
+  cheekL.scale.set(1, 0.7, 0.4); cheekR.scale.set(1, 0.7, 0.4);
+  cheekL.position.set(-0.25, 1.33, 0.32); cheekR.position.set(0.25, 1.33, 0.32);
+
+  // velké kulaté oči s panenkou
+  const eyeWL = new THREE.Mesh(new THREE.SphereGeometry(0.095, 10, 8), eyeWhite);
+  const eyeWR = eyeWL.clone();
+  eyeWL.position.set(-0.17, 1.45, 0.39); eyeWR.position.set(0.17, 1.45, 0.39);
+  const pupilL = new THREE.Mesh(new THREE.SphereGeometry(0.05, 8, 6), pupilMat);
+  const pupilR = pupilL.clone();
+  pupilL.position.set(-0.16, 1.45, 0.46); pupilR.position.set(0.18, 1.45, 0.46);
+
+  // úsměv
+  const smile = new THREE.Mesh(new THREE.TorusGeometry(0.09, 0.017, 6, 12, Math.PI * 0.8), mouthMat);
+  smile.position.set(0, 1.32, 0.42);
+  smile.rotation.z = Math.PI * 1.1;
+
+  // malý roztomilý trs vlasů
+  const hair = new THREE.Mesh(new THREE.ConeGeometry(0.09, 0.17, 6), hairMat);
+  hair.position.set(0.02, 1.85, 0.04);
+  hair.rotation.x = -0.35;
+
+  player.add(legL, legR, body, armL, armR, head, cheekL, cheekR, eyeWL, eyeWR, pupilL, pupilR, smile, hair);
   player.userData = { legL, legR, armL, armR };
 }
 // potápěčská helma (objeví se po craftnutí obleku)
 const helmet = new THREE.Mesh(
-  new THREE.SphereGeometry(0.42, 14, 12),
+  new THREE.SphereGeometry(0.5, 16, 12),
   new THREE.MeshStandardMaterial({ color: 0xffa94d, transparent: true, opacity: 0.45, roughness: 0.1 })
 );
-helmet.position.y = 1.44;
+helmet.position.y = 1.42;
 helmet.visible = false;
 player.add(helmet);
 player.position.set(0, R + 0.42, 0);
