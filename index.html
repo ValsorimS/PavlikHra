@@ -71,19 +71,20 @@
     #inv { max-width: calc(100% - 20px); }
   }
 
-  /* ---------- ovládání dotykem ---------- */
-  #dpad {
-    position: fixed; bottom: 14px; left: 14px; z-index: 6;
-    display: grid; grid-template-columns: repeat(3, 52px); grid-template-rows: repeat(2, 52px); gap: 5px;
+  /* ---------- ovládání dotykem (joystick) ---------- */
+  #joystick {
+    position: fixed; bottom: 18px; left: 18px; z-index: 6;
+    width: 120px; height: 120px; touch-action: none;
   }
-  #dpad button {
-    font-size: 24px; border-radius: 12px; border: 2px solid #6c5ce7;
-    background: rgba(20,16,60,0.8); color: #fff; touch-action: none; user-select: none;
+  #joyBase {
+    position: absolute; inset: 0; border-radius: 50%;
+    background: rgba(20,16,60,0.55); border: 2px solid #6c5ce7;
   }
-  #dpad .up   { grid-column: 2; grid-row: 1; }
-  #dpad .left { grid-column: 1; grid-row: 2; }
-  #dpad .down { grid-column: 2; grid-row: 2; }
-  #dpad .right{ grid-column: 3; grid-row: 2; }
+  #joyKnob {
+    position: absolute; width: 54px; height: 54px; border-radius: 50%;
+    background: rgba(255,255,255,0.85); border: 2px solid #6c5ce7;
+    left: 50%; top: 50%; transform: translate(-50%, -50%); will-change: transform;
+  }
 
   /* ---------- overlaye ---------- */
   .overlay {
@@ -133,11 +134,8 @@
 </div>
 <button id="craftToggle">🛠️</button>
 
-<div id="dpad">
-  <button class="up" data-k="w">▲</button>
-  <button class="left" data-k="a">◀</button>
-  <button class="down" data-k="s">▼</button>
-  <button class="right" data-k="d">▶</button>
+<div id="joystick">
+  <div id="joyBase"><div id="joyKnob"></div></div>
 </div>
 
 <div class="overlay" id="title">
@@ -148,7 +146,7 @@
   Craftuj sekeru, lopatu a krumpáče, rozšiřuj svůj ostrov,
   postav <b>most na Neptun</b> 🌉 a vyrob <b>potápěčský oblek</b> 🤿,
   abys mohl kamaráda zachránit!<br><br>
-  🎮 Pohyb: <b>W A S D</b> nebo šipky (na mobilu tlačítka).<br>
+  🎮 Pohyb: <b>W A S D</b> nebo šipky (na mobilu joystick vlevo dole).<br>
   ⛏️ Těžení je automatické — stačí přijít blízko!</p>
   <button id="continueBtn" style="display:none">POKRAČOVAT VE HŘE</button>
   <button id="startBtn">HRÁT!</button>
@@ -738,18 +736,48 @@ setInterval(() => {
 }, 14000);
 
 // ================== OVLÁDÁNÍ ==================
+// klávesnice — pro hraní na počítači
 const keys = {};
 addEventListener('keydown', e => { keys[e.key.toLowerCase()] = true; });
 addEventListener('keyup', e => { keys[e.key.toLowerCase()] = false; });
-for (const b of document.querySelectorAll('#dpad button')) {
-  const k = b.dataset.k;
-  const on = e => { e.preventDefault(); keys[k] = true; };
-  const off = () => { keys[k] = false; };
-  b.addEventListener('pointerdown', on);
-  b.addEventListener('pointerup', off);
-  b.addEventListener('pointerleave', off);
-  b.addEventListener('pointercancel', off);
+
+// joystick — pro hraní na mobilu/tabletu (analogové ovládání směru)
+const joyState = { active: false, x: 0, y: 0 };
+const joyBase = document.getElementById('joyBase');
+const joyKnob = document.getElementById('joyKnob');
+const JOY_MAX_R = 34;    // dosah táhnutí joysticku v px
+const JOY_DEADZONE = 0.15;
+let joyPointerId = null;
+
+function setJoyVector(dx, dy) {
+  const dist = Math.hypot(dx, dy);
+  const clamped = Math.min(dist, JOY_MAX_R);
+  const angle = Math.atan2(dy, dx);
+  const kx = Math.cos(angle) * clamped, ky = Math.sin(angle) * clamped;
+  joyKnob.style.transform = `translate(calc(-50% + ${kx}px), calc(-50% + ${ky}px))`;
+  const mag = clamped / JOY_MAX_R;
+  if (mag < JOY_DEADZONE) { joyState.active = false; joyState.x = 0; joyState.y = 0; }
+  else { joyState.active = true; joyState.x = kx / JOY_MAX_R; joyState.y = ky / JOY_MAX_R; }
 }
+function resetJoy() {
+  joyPointerId = null;
+  joyState.active = false; joyState.x = 0; joyState.y = 0;
+  joyKnob.style.transform = 'translate(-50%, -50%)';
+}
+function joyFromEvent(e) {
+  const rect = joyBase.getBoundingClientRect();
+  setJoyVector(e.clientX - (rect.left + rect.width / 2), e.clientY - (rect.top + rect.height / 2));
+}
+joyBase.addEventListener('pointerdown', e => {
+  e.preventDefault();
+  joyPointerId = e.pointerId;
+  joyBase.setPointerCapture(joyPointerId);
+  joyFromEvent(e);
+});
+joyBase.addEventListener('pointermove', e => { if (e.pointerId === joyPointerId) joyFromEvent(e); });
+const endJoy = e => { if (e.pointerId === joyPointerId) resetJoy(); };
+joyBase.addEventListener('pointerup', endJoy);
+joyBase.addEventListener('pointercancel', endJoy);
 
 // ================== TĚŽENÍ ==================
 const mineEl = document.getElementById('mine');
@@ -836,10 +864,14 @@ function nearestTile() {
 
 function updateMovement(dt, now) {
   let ix = 0, iz = 0;
-  if (keys['w'] || keys['arrowup']) iz -= 1;
-  if (keys['s'] || keys['arrowdown']) iz += 1;
-  if (keys['a'] || keys['arrowleft']) ix -= 1;
-  if (keys['d'] || keys['arrowright']) ix += 1;
+  if (joyState.active) {
+    ix = joyState.x; iz = joyState.y;
+  } else {
+    if (keys['w'] || keys['arrowup']) iz -= 1;
+    if (keys['s'] || keys['arrowdown']) iz += 1;
+    if (keys['a'] || keys['arrowleft']) ix -= 1;
+    if (keys['d'] || keys['arrowright']) ix += 1;
+  }
   const moving = ix !== 0 || iz !== 0;
   if (moving) {
     const d = new THREE.Vector3(ix, 0, iz).normalize();
